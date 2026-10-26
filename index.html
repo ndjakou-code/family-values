@@ -370,8 +370,8 @@ p { margin: 0; }
       <div id="final-sticks" class="podium"></div>
     </div>
     <div class="stack">
-      <h3 class="tag-fam">Top 5 votes</h3>
-      <p class="note">Ties go to the value more people put in their top 3.</p>
+      <h3 class="tag-fam">Top 5</h3>
+      <p class="note">A top-3 pick scores 2 points. Each of the 2 more scores 1 point. Ties go to the value more people put in their top 3.</p>
     </div>
     <div id="podium" class="podium"></div>
     <p id="tie-note" class="note" hidden>There's a tie for fifth place.</p>
@@ -397,7 +397,7 @@ p { margin: 0; }
     <div class="stack">
       <p class="step">Together</p>
       <h2>Pick our final 3</h2>
-      <p class="lede">Talk it over, then tap the 3 values that will be our family values. They're sorted by votes.</p>
+      <p class="lede">Talk it over, then tap the 3 values that will be our family values. They're sorted by score.</p>
     </div>
     <div id="final-slots" class="slots" aria-label="Our final 3"></div>
     <p id="final-legend" class="legend" hidden><span aria-hidden="true">★</span> Also a Christlike attribute in Preach My Gospel</p>
@@ -422,6 +422,7 @@ p { margin: 0; }
   // Once everyone has voted, the family talks it over and picks a final 3 together.
   const STEPS = ['top', 'more', 'me'];
   const LIMIT = { top: 3, more: 2, me: 3 };
+  const POINTS = { top: 2, more: 1 };
   const FINAL = 3;
   const COPY = {
     top: { step: 'Step 1 of 3 · Our family', q: 'Which 3 values matter most for our family?', help: 'Think about how we treat each other and what matters most in our home.', next: 'Next' },
@@ -460,7 +461,7 @@ p { margin: 0; }
   const initial = (name) => (String(name || '?').trim()[0] || '?').toUpperCase();
   const valid = (arr) => (Array.isArray(arr) ? arr.filter((id) => valueById.has(id)) : []);
   const names = (people) => people.map((p) => p.name).join(', ');
-  const votes = (k) => (k === 1 ? '1 vote' : `${k} votes`);
+  const pts = (k) => (k === 1 ? '1 point' : `${k} points`);
   const avatar = (p, cls) => h('span', { class: 'avatar' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true' }, initial(p.name));
   const tidy = (s, max) => {
     const t = String(s || '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -663,7 +664,8 @@ p { margin: 0; }
     if (focused) { const b = grid.querySelector(`[data-vid="${CSS.escape(focused)}"]`); if (b) b.focus({ preventScroll: true }); }
   }
 
-  // Every family pick is a vote; a top-3 pick breaks ties. The top 5 are the winners.
+  // A top-3 pick scores 2 points, each of the 2 more scores 1; more top-3 picks breaks a tie.
+  // The 5 highest scores are the winners.
   function familyRows() {
     const voters = S.people.filter((p) => picksOf(p.id).top.length + picksOf(p.id).more.length);
     const counts = new Map();
@@ -673,8 +675,8 @@ p { margin: 0; }
       f.top.forEach((id) => tallyOf(id).top.push(p));
       f.more.forEach((id) => tallyOf(id).more.push(p));
     }
-    const rows = [...counts].map(([id, t]) => ({ v: valueById.get(id), ...t, total: t.top.length + t.more.length }))
-      .map((r) => ({ ...r, key: r.total * 100 + r.top.length }))
+    const rows = [...counts].map(([id, t]) => ({ v: valueById.get(id), ...t, score: t.top.length * POINTS.top + t.more.length * POINTS.more }))
+      .map((r) => ({ ...r, key: r.score * 100 + r.top.length }))
       .sort((a, b) => b.key - a.key || byOrder(a.v, b.v));
     const cut = rows.length ? rows[Math.min(5, rows.length) - 1].key : 0;
     return { voters, rows, cut, winners: rows.filter((r) => r.key >= cut), rank: new Map(rows.map((r) => [r.v.id, r])) };
@@ -841,7 +843,7 @@ p { margin: 0; }
 
     const { voters, rows, cut, winners } = familyRows();
     $('tie-note').hidden = winners.length <= 5;
-    $('podium').replaceChildren(...winners.map((r, i) => stick(r.v, votes(r.total), i < 3)));
+    $('podium').replaceChildren(...winners.map((r, i) => stick(r.v, pts(r.score), i < 3)));
     $('final-call-text').textContent = decided
       ? 'These are our family values. If you decide differently later, you can change them.'
       : 'Talk about the results together, then pick the 3 values that will be our family values.';
@@ -850,8 +852,8 @@ p { margin: 0; }
     gf.className = 'btn ' + (decided ? 'ghost' : 'primary');
 
     $('family-tally').replaceChildren(...rows.map((r) => h('li', { class: 'trow' + (r.key >= cut ? ' top' : ''), css: { '--vc': vcolor(r.v) } },
-      h('div', { class: 'thead' }, h('span', { class: 'tname' }, vlabel(r.v)), h('span', { class: 'tnum' }, `${r.total} of ${voters.length}`)),
-      h('div', { class: 'track' }, h('div', { class: 'fill', css: { width: `${(r.total / voters.length) * 100}%` } })),
+      h('div', { class: 'thead' }, h('span', { class: 'tname' }, vlabel(r.v)), h('span', { class: 'tnum' }, pts(r.score))),
+      h('div', { class: 'track' }, h('div', { class: 'fill', css: { width: `${(r.score / (voters.length * POINTS.top)) * 100}%` } })),
       h('div', { class: 'tby' }, [r.top.length ? `Top 3: ${names(r.top)}` : '', r.more.length ? `2 more: ${names(r.more)}` : ''].filter(Boolean).join(' · ')))));
 
     const head = (p) => h('div', { class: 'card-head' }, avatar(p, 'sm'), h('h4', {}, p.name));
@@ -879,7 +881,7 @@ p { margin: 0; }
       const r = rank.get(v.id);
       return valueCard(v, {
         pressed: finalPick.includes(v.id), onClick: () => toggleFinal(v.id),
-        sub: r ? votes(r.total) + (r.top.length ? ` · ${r.top.length} in a top 3` : '') : 'No votes',
+        sub: r ? pts(r.score) + (r.top.length ? ` · ${r.top.length} in a top 3` : '') : 'No votes',
       });
     }), finalPick.length >= FINAL);
     $('final-legend').hidden = !S.values.some((v) => v.christlike);
