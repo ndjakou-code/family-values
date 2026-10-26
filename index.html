@@ -417,7 +417,7 @@ p { margin: 0; }
   // Inside Claude the page saves to the artifact's own database. Anywhere else (GitHub Pages)
   // it saves to the Family Values Apps Script, which also holds the names.
   const API_URL = 'https://script.google.com/macros/s/AKfycbxiKIHMtl-NvUEdTdH2XAfksfIgZQHOHnTLXZ6D_vkStAbVD28d65Eoi3QrJLCnP8GltQ/exec';
-  const BUILD = '1793045756139';   // stamped by build.js; open phones reload when it changes
+  const BUILD = '1793046652657';   // stamped by build.js; open phones reload when it changes
 
   // Our family: top 3 first, then 2 more to make a top 5. Then 3 about me.
   // Once everyone has voted, the family talks it over and picks a final 3 together.
@@ -875,10 +875,14 @@ p { margin: 0; }
       const tied = rows.filter((r) => r.key === k);
       return tied.length > 1 && rows.filter((r) => r.key > k).length < place && rows.filter((r) => r.key >= k).length > place ? tied : [];
     };
-    const ties = [[3, '3rd'], [5, '5th']].map(([place, word]) => {
-      const tied = tieAt(place);
-      return tied.length ? `${tied.map((r) => r.v.name).join(' and ')} are tied for ${word} place.` : '';
-    }).filter(Boolean);
+    const ordinal = (n) => n + (['th', 'st', 'nd', 'rd'][n] || 'th');
+    const andList = (a) => (a.length < 3 ? a.join(' and ') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1]);
+    const groups = new Map();   // one note per tie, even when it covers both 3rd and 5th
+    [3, 5].forEach((place) => { const t = tieAt(place); if (t.length) groups.set(t[0].key, t); });
+    const ties = [...groups.values()].map((tied) => {
+      const place = rows.filter((r) => r.key > tied[0].key).length + 1;
+      return `${andList(tied.map((r) => r.v.name))} are tied for ${ordinal(place)} place.`;
+    });
     $('tie-note').hidden = !ties.length;
     $('tie-note').textContent = ties.join(' ');
     $('podium').replaceChildren(...winners.map((r) => stick(r.v, pts(r.score), r.key >= keyAt(3))));
