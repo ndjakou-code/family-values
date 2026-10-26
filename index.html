@@ -417,6 +417,7 @@ p { margin: 0; }
   // Inside Claude the page saves to the artifact's own database. Anywhere else (GitHub Pages)
   // it saves to the Family Values Apps Script, which also holds the names.
   const API_URL = 'https://script.google.com/macros/s/AKfycbxiKIHMtl-NvUEdTdH2XAfksfIgZQHOHnTLXZ6D_vkStAbVD28d65Eoi3QrJLCnP8GltQ/exec';
+  const BUILD = '1793045756139';   // stamped by build.js; open phones reload when it changes
 
   // Our family: top 3 first, then 2 more to make a top 5. Then 3 about me.
   // Once everyone has voted, the family talks it over and picks a final 3 together.
@@ -431,7 +432,7 @@ p { margin: 0; }
   };
 
   const $ = (id) => document.getElementById(id);
-  const S = { store: null, status: 'connecting', people: [], values: [], picks: {}, final: null, saving: false };
+  const S = { store: null, status: 'connecting', people: [], values: [], picks: {}, final: null, revealed: false, saving: false };
   let valueById = new Map();
   let view = 'home';
   let session = null; // { pid, step, top: [ids], more: [ids], me: [ids], fresh, saved }
@@ -484,9 +485,11 @@ p { margin: 0; }
   };
   const isDone = (pid) => STEPS.every((s) => picksOf(pid)[s].length >= LIMIT[s]);
   const isStarted = (pid) => STEPS.some((s) => picksOf(pid)[s].length > 0);
-  // Results stay hidden until everyone is in, so nobody is swayed by anyone else's picks.
   const allDone = () => S.people.length > 0 && S.people.every((p) => isDone(p.id));
   const finalIds = () => valid(S.final && S.final.ids).slice(0, FINAL);
+  // Results stay hidden until everyone has voted once, so nobody is swayed by anyone else's picks.
+  // After that they stay open and recalculate as people change their picks.
+  const resultsOpen = () => allDone() || S.revealed || finalIds().length > 0;
 
   function toast(msg) {
     const t = $('toast');
@@ -515,7 +518,7 @@ p { margin: 0; }
 
   function dbStore(db) {
     const write = queue();
-    const st = { people: [], values: [], picks: {}, final: null };
+    const st = { people: [], values: [], picks: {}, final: null, revealed: false };
     const got = new Set();
     return {
       start(onState, onError) {
@@ -527,8 +530,12 @@ p { margin: 0; }
         sub('values', (docs) => { st.values = docs; });
         sub('people', (docs) => { st.people = docs; });
         sub('picks', (docs) => { st.picks = Object.fromEntries(docs.map((d) => [d.id, d])); });
-        sub('meta', (docs) => { st.final = docs.find((d) => d.id === 'final') || null; });
+        sub('meta', (docs) => {
+          st.final = docs.find((d) => d.id === 'final') || null;
+          st.revealed = docs.some((d) => d.id === 'revealed');
+        });
       },
+      markRevealed: () => write(() => db.doc('meta/revealed').set({ at: Date.now() })),
       savePicks: (pid, p) => write(() => db.doc('picks/' + pid).set({ top: p.top, more: p.more, me: p.me, updatedAt: Date.now() })),
       setFinal: (ids) => write(() => db.doc('meta/final').set({ ids, decidedAt: Date.now() })),
       async addPerson(name) {
@@ -547,7 +554,7 @@ p { margin: 0; }
         return ref.id;
       },
       removeValue: (id) => write(() => db.doc('values/' + id).delete()),
-      clearVotes: () => Object.keys(S.picks).map((id) => 'picks/' + id).concat('meta/final')
+      clearVotes: () => Object.keys(S.picks).map((id) => 'picks/' + id).concat('meta/final', 'meta/revealed')
         .reduce((chain, path) => chain.then(() => write(() => db.doc(path).delete())), Promise.resolve()),
     };
   }
@@ -563,7 +570,7 @@ p { margin: 0; }
     function apply(s) {
       if (!s || s.rev <= rev) return;
       rev = s.rev;
-      onState({ people: s.people || [], values: s.values || [], picks: s.picks || {}, final: s.final || null });
+      onState({ people: s.people || [], values: s.values || [], picks: s.picks || {}, final: s.final || null, revealed: !!s.revealed });
     }
     async function refresh(onError) {
       if (busy) return;
@@ -573,13 +580,27 @@ p { margin: 0; }
       finally { busy = false; }
     }
     const change = async (fn, ...args) => { const r = await call(fn, ...args); apply(r.state); return r.id; };
+    // A phone left open keeps the page it loaded; reload it when a newer one is published,
+    // but never while someone is part-way through picking.
+    async function checkForNewPage() {
+      if (!/^\d+$/.test(BUILD) || view === 'vote' || view === 'final') return;
+      try {
+        const html = await (await fetch(location.pathname, { cache: 'no-store' })).text();
+        const m = html.match(/const BUILD = '(\d+)'/);
+        if (m && m[1] !== BUILD) location.reload();
+      } catch (e) { /* offline: try again later */ }
+    }
     return {
       start(cb, onError) {
         onState = cb;
         refresh(onError);
         setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 8000);
-        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
+        setInterval(() => { if (document.visibilityState === 'visible') checkForNewPage(); }, 60000);
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') { refresh(); checkForNewPage(); }
+        });
       },
+      markRevealed: () => Promise.resolve(),   // the Apps Script records this itself
       savePicks: (pid, p) => change('savePicks', pid, p.top, p.more, p.me),
       setFinal: (ids) => change('setFinal', ids),
       addPerson: (name) => change('addPerson', name),
@@ -607,7 +628,9 @@ p { margin: 0; }
       S.people = st.people.filter((p) => p.name).sort(byOrder);
       S.picks = st.picks;
       S.final = st.final;
+      S.revealed = !!st.revealed;
       S.status = 'ready';
+      if (allDone() && !S.revealed) S.store.markRevealed().catch(failed);
       render();
     }, (err) => {
       console.error(err);
@@ -692,7 +715,7 @@ p { margin: 0; }
   }
 
   function render() {
-    if ((view === 'results' || view === 'final') && !allDone()) { go('home'); return; }
+    if ((view === 'results' || view === 'final') && !resultsOpen()) { go('home'); return; }
     renderHome();
     renderGrownups();
     if (view === 'vote') renderVote();
@@ -713,7 +736,7 @@ p { margin: 0; }
 
     const ready = S.status === 'ready';
     const fin = finalIds();
-    $('home-final').hidden = !ready || !allDone() || fin.length !== FINAL;
+    $('home-final').hidden = !ready || !resultsOpen() || fin.length !== FINAL;
     $('home-final-sticks').replaceChildren(...fin.map((id) => stick(valueById.get(id), '', true)));
 
     $('people').replaceChildren(...(ready ? S.people : []).map((p) => {
@@ -728,7 +751,7 @@ p { margin: 0; }
     $('home-progress-wrap').hidden = !n || !ready;
     $('home-progress').replaceChildren(...S.people.map((p) => h('span', { class: 'seg' + (isDone(p.id) ? ' on' : ''), css: { '--c': colorOf(p) } })));
     $('home-count').textContent = n && k === n ? 'Everyone has voted!' : `${k} of ${n} voted`;
-    $('go-results').hidden = !ready || !allDone();
+    $('go-results').hidden = !ready || !resultsOpen();
     $('grownups').hidden = !ready;
   }
 
@@ -826,7 +849,7 @@ p { margin: 0; }
     $('done-top').replaceChildren(...valid(session.top).map(chip));
     $('done-more').replaceChildren(...valid(session.more).map(chip));
     $('done-me').replaceChildren(...valid(session.me).map(chip));
-    const open = allDone();
+    const open = resultsOpen();
     const k = S.people.filter((x) => isDone(x.id)).length;
     $('done-results').hidden = !open;
     $('done-wait').hidden = open;
@@ -837,7 +860,10 @@ p { margin: 0; }
     const fin = finalIds();
     const decided = fin.length === FINAL;
     $('results-title').textContent = decided ? 'Our family values' : 'The votes are in';
-    $('results-count').textContent = `All ${S.people.length} of us have voted.`;
+    const changing = S.people.filter((p) => !isDone(p.id));
+    $('results-count').textContent = changing.length
+      ? `Still changing their picks: ${names(changing)}. The results update as they go.`
+      : `All ${S.people.length} of us have voted. The results update if anyone changes their picks.`;
     $('final-box').hidden = !decided;
     $('final-sticks').replaceChildren(...fin.map((id) => stick(valueById.get(id), '', true)));
 
